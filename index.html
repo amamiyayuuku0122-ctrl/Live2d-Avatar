@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8">
+
+<title>Live2D Avatar Studio</title>
+
+<style>
+
+body{margin:0;background:#111;overflow:hidden;font-family:'Segoe UI',sans-serif;color:white;}
+
+canvas{display:block;}
+
+#ui{
+
+  position:fixed; left:10px; top:10px; background:linear-gradient(135deg, rgba(40,40,50,0.9), rgba(60,60,80,0.8));
+
+  border-radius:15px; padding:15px; box-shadow:0 4px 15px rgba(0,0,0,0.6); z-index:10; width:280px;
+
+}
+
+input[type=range]{ width:160px; margin:3px 0; -webkit-appearance:none; height:6px; border-radius:3px; background:linear-gradient(90deg,#ff7eb9,#ff65a3);}
+
+input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; width:16px; height:16px; background:#fff; border-radius:50%; cursor:pointer; box-shadow:0 2px 5px rgba(0,0,0,0.5);}
+
+button{ width:100%; background: linear-gradient(90deg,#ff7eb9,#ff65a3); border:none; border-radius:10px; color:white; font-weight:bold; padding:8px; margin:5px 0; cursor:pointer; transition:0.3s;}
+
+button:hover{ filter: brightness(1.2); transform: scale(1.05); }
+
+select{width:100%; margin:5px 0; border-radius:8px; padding:5px; background:#222; color:white;}
+
+</style>
+
+</head>
+
+<body>
+
+
+<div id="ui">
+
+<input type="file" webkitdirectory multiple id="folder"><br><br>
+
+
+<select id="avatarSelect"><option value="">衣装選択</option></select>
+
+<button id="changeAvatar">切り替え</button><br><br>
+
+
+<select id="expressionSelect">
+
+  <option value="">表情選択</option>
+
+  <option value="normal">通常</option>
+
+  <option value="smile">笑顔</option>
+
+  <option value="angry">怒り</option>
+
+</select>
+
+<button id="changeExpression">切り替え</button><br><br>
+
+
+Head yaw <input type="range" id="head" min="-1" max="1" step="0.01" value="0"><br>
+
+Head pitch <input type="range" id="headPitch" min="-1" max="1" step="0.01" value="0"><br>
+
+Body rot <input type="range" id="body" min="-1" max="1" step="0.01" value="0"><br>
+
+Arm rot <input type="range" id="arm" min="-1" max="1" step="0.01" value="0"><br>
+
+髪揺れ <input type="range" id="hairLag" min="0" max="1" step="0.01" value="0.2"><br>
+
+フリル揺れ <input type="range" id="frillLag" min="0" max="1" step="0.01" value="0.2"><br><br>
+
+
+BGM選択:
+
+<select id="bgmSelect"></select>
+
+<button id="fadeButton">BGMフェードアウト</button><br>
+
+BGM音量 <input type="range" id="bgmVol" min="0" max="1" step="0.01" value="0.5"><br><br>
+
+
+<button onclick="startRecording()">録画開始</button>
+
+<button onclick="stopRecording()">録画停止</button>
+
+</div>
+
+
+<canvas id="c"></canvas>
+
+<audio id="bgm" loop></audio>
+
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+
+<script>
+
+const canvas=document.getElementById("c"); const ctx=canvas.getContext("2d");
+
+function resize(){canvas.width=innerWidth;canvas.height=innerHeight;}
+
+resize(); addEventListener("resize",resize);
+
+
+let allImages={}; let avatar=null; let currentExpression="normal";
+
+
+// フォルダ読み込み（空フォルダOK）
+
+document.getElementById("folder").onchange=e=>{
+
+  const select=document.getElementById("avatarSelect");
+
+  const bgmSelect=document.getElementById("bgmSelect");
+
+  for(const f of e.target.files){
+
+    if(f.type.startsWith("image")){
+
+      const folderName=f.webkitRelativePath.split("/")[0];
+
+      if(!allImages[folderName]) allImages[folderName]={};
+
+      const img=new Image(); img.src=URL.createObjectURL(f);
+
+      allImages[folderName][f.name]=img;
+
+      if(!Array.from(select.options).some(opt=>opt.value==folderName)){
+
+        const opt=document.createElement("option"); opt.value=folderName; opt.textContent=folderName; select.appendChild(opt);
+
+      }
+
+    } else if(f.type.startsWith("audio")){
+
+      const opt=document.createElement("option"); opt.value=URL.createObjectURL(f); opt.textContent=f.name; bgmSelect.appendChild(opt);
+
+    }
+
+  }
+
+};
+
+
+// 衣装切替
+
+document.getElementById("changeAvatar").onclick=()=>{
+
+  const sel=document.getElementById("avatarSelect").value;
+
+  if(allImages[sel]) avatar=new Avatar(allImages[sel],currentExpression);
+
+};
+
+
+// 表情切替
+
+document.getElementById("changeExpression").onclick=()=>{
+
+  currentExpression=document.getElementById("expressionSelect").value;
+
+  if(avatar) avatar.setExpression(currentExpression);
+
+};
+
+
+// BGM再生
+
+const audio=document.getElementById("bgm");
+
+const audioCtx=new (window.AudioContext||window.webkitAudioContext)();
+
+const track=audioCtx.createMediaElementSource(audio);
+
+const gainNode=audioCtx.createGain(); track.connect(gainNode).connect(audioCtx.destination);
+
+gainNode.gain.value=0.5;
+
+document.getElementById("bgmVol").oninput=e=>gainNode.gain.value=parseFloat(e.target.value);
+
+document.getElementById("bgmSelect").onchange=e=>{ audio.src=e.target.value; audio.play(); }
+
+document.getElementById("fadeButton").onclick=()=>{
+
+  const now=audioCtx.currentTime;
+
+  gainNode.gain.linearRampToValueAtTime(0,now+3);
+
+  setTimeout(()=>{audio.pause();audio.currentTime=0;},3000);
+
+};
+
+
+// 録画
+
+let recorder,chunks=[];
+
+function startRecording(){ recorder=new MediaRecorder(canvas.captureStream(30),{mimeType:'video/webm'});
+
+recorder.ondataavailable=e=>chunks.push(e.data);
+
+recorder.onstop=e=>{ const blob=new Blob(chunks,{type:'video/webm'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download='Live2D_Avatar.webm'; a.click(); chunks=[]; };
+
+recorder.start();}
+
+function stopRecording(){recorder.stop();}
+
+
+// パーツクラス
+
+class Part{constructor(img,x,y){this.img=img;this.x=x;this.y=y;this.rot=0;this.pitch=0;this.displayRot=0;this.displayPitch=0;}
+
+update(lag=1){this.displayRot+=(this.rot-this.displayRot)*lag;this.displayPitch+=(this.pitch-this.displayPitch)*lag;}
+
+draw(px,py){if(!this.img)return; ctx.save(); ctx.translate(px+this.x,py+this.y); ctx.rotate(this.displayRot); ctx.translate(0,this.displayPitch*20); ctx.drawImage(this.img,-this.img.width/2,-this.img.height/2); ctx.restore();}}
+
+
+// フリルクラス
+
+class Frill{constructor(img,x,y){this.img=img;this.offsetX=x;this.offsetY=y;this.rot=0;this.targetRot=0;this.velocity=0;}
+
+update(bodyRot,lag=0.2){ if(!this.img)return; this.targetRot=bodyRot*0.5; let spring=0.1,damping=0.8; this.velocity+=(this.targetRot-this.rot)*spring; this.velocity*=damping; this.rot+=this.velocity*lag*5;}
+
+draw(x,y){if(!this.img)return; ctx.save(); ctx.translate(x+this.offsetX,y+this.offsetY); ctx.rotate(this.rot); ctx.drawImage(this.img,-this.img.width/2,-this.img.height/2); ctx.restore();}}
+
+
+// 髪クラス
+
+class Hair{constructor(img,x,y){this.img=img;this.offsetX=x;this.offsetY=y;this.rot=0;this.targetRot=0;this.velocity=0;}
+
+update(headRot,lag=0.2){ if(!this.img)return; this.targetRot=headRot*0.3; let spring=0.1,damping=0.8; this.velocity+=(this.targetRot-this.rot)*spring; this.velocity*=damping; this.rot+=this.velocity*lag*5;}
+
+draw(x,y){ if(!this.img) return; ctx.save(); ctx.translate(x+this.offsetX,y+this.offsetY); ctx.rotate(this.rot); ctx.drawImage(this.img,-this.img.width/2,-this.img.height/2); ctx.restore();}}
+
+
+// Avatarクラス
+
+class Avatar{
+
+  constructor(img,expression="normal"){
+
+    this.body=new Part(img["body.png"],0,0);
+
+    this.head=new Part(img["head.png"],0,-80);
+
+    this.armL=new Part(img["armL.png"],-40,-20);
+
+    this.armR=new Part(img["armR.png"],40,-20);
+
+    this.frill=new Frill(img["frill.png"],0,60);
+
+    this.hair=new Hair(img["hair.png"],0,-90);
+
+
+    this.eyeOpen=img["eyeOpen.png"];
+
+    this.eyeClosed=img["eyeClosed.png"];
+
+    this.mouthOpen=img["mouthOpen.png"];
+
+    this.mouthSmile=img["mouthSmile.png"];
+
+    this.expression=expression;
+
+    this.blinkTimer=0; this.blinkDuration=5; this.blinkFrame=0;
+
+  }
+
+  setExpression(expr){this.expression=expr;}
+
+  update(faceX=0,faceY=0){
+
+    this.body.rot=+document.getElementById("body").value; 
+
+    this.head.rot=+document.getElementById("head").value+faceX;
+
+    this.head.pitch=+document.getElementById("headPitch").value+faceY;
+
+    this.armL.rot=+document.getElementById("arm").value;
+
+    this.armR.rot=-+document.getElementById("arm").value;
+
+
+    const frillLag=parseFloat(document.getElementById("frillLag").value);
+
+    const hairLag=parseFloat(document.getElementById("hairLag").value);
+
+
+    this.frill.update(this.body.rot,frillLag);
+
+    this.hair.update(this.head.rot + this.body.rot*0.1, hairLag);
+
+
+    this.body.update(0.3); this.head.update(0.3); this.armL.update(0.2); this.armR.update(0.2);
+
+
+    // 瞬き
+
+    this.blinkTimer-=1/60;
+
+    if(this.blinkTimer<=0){ this.blinkTimer=Math.random()*4+2; this.blinkFrame=this.blinkDuration;}
+
+    if(this.blinkFrame>0) this.blinkFrame-=1;
+
+  }
+
+  draw(x,y){
+
+    this.body.draw(x,y);
+
+    this.frill.draw(x,y);
+
+    this.armL.draw(x,y); this.armR.draw(x,y);
+
+    this.head.draw(x,y);
+
+    this.hair.draw(x,y);
+
+
+    if(this.blinkFrame>0 && this.eyeClosed) ctx.drawImage(this.eyeClosed,x-32,y-80,64,32);
+
+    else if(this.eyeOpen) ctx.drawImage(this.eyeOpen,x-32,y-80,64,32);
+
+
+    if(this.expression==="smile" && this.mouthSmile) ctx.drawImage(this.mouthSmile,x-20,y-60,40,20);
+
+    else if(this.mouthOpen) ctx.drawImage(this.mouthOpen,x-20,y-60,40,20);
+
+  }
+
+}
+
+
+// フェイストラッキング
+
+let faceX=0,faceY=0;
+
+const video=document.createElement("video"); video.style.display="none"; document.body.appendChild(video);
+
+const faceMesh=new FaceMesh({locateFile:(file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+
+faceMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.5});
+
+faceMesh.onResults(results=>{ if(results.multiFaceLandmarks && results.multiFaceLandmarks[0]){
+
+  const lm=results.multiFaceLandmarks[0]; faceX=(lm[454].x-lm[234].x-0.5)*2; faceY=(lm[10].y-lm[152].y)*-1;}});
+
+const camera=new Camera(video,{onFrame: async()=>{await faceMesh.send({image:video})},width:320,height:240}); camera.start();
+
+
+// メインループ
+
+function loop(){ ctx.clearRect(0,0,canvas.width,canvas.height); if(avatar) avatar.update(faceX,faceY),avatar.draw(canvas.width/2,canvas.height/2+50); requestAnimationFrame(loop);}
+
+loop();
+
+</script>
+
+</body>
+
+</html>
+
